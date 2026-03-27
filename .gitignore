@@ -1,0 +1,6 @@
+.env
+.claude
+.trae
+.cursor
+backend/.venv
+backend/__pycache__
