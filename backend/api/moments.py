@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
@@ -16,7 +18,10 @@ def get_moments(db: Session = Depends(get_db)):
 
 @router.post("/", response_model=MomentResponse, status_code=201)
 def create_moment(payload: MomentCreate, db: Session = Depends(get_db)):
-    moment = Moment(**payload.model_dump())
+    required = os.environ.get("UPLOAD_PASSWORD")
+    if required and payload.password != required:
+        raise HTTPException(status_code=401, detail="暗号错误")
+    moment = Moment(**payload.model_dump(exclude={"password"}))
     db.add(moment)
     db.commit()
     db.refresh(moment)

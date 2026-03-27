@@ -8,6 +8,7 @@ class MomentCreate(BaseModel):
     description: str | None = Field(default=None, max_length=2000)
     media_url: str = Field(..., min_length=1, max_length=1000)
     media_type: Literal["photo", "video"]
+    password: str = Field(default="127")
 
 
 class MomentResponse(BaseModel):
