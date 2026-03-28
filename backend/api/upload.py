@@ -1,15 +1,30 @@
 import os
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from qcloud_cos import CosConfig, CosS3Client
 
-from schemas import UploadAuthResponse
+from schemas import BatchUploadAuthResponse, UploadAuthResponse
 
 router = APIRouter(prefix="/api/upload", tags=["upload"])
 
+ALLOWED_EXTENSIONS = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+    "video/webm": ".webm",
+}
 
-def _get_cos_client() -> tuple[CosS3Client, str, str]:
+
+def _check_access(x_access_password: str | None = Header(default=None)):
+    required = os.environ.get("ACCESS_PASSWORD")
+    if required and x_access_password != required:
+        raise HTTPException(status_code=401, detail="暗号错误")
+
+
+def _get_cos_client() -> tuple[CosS3Client, str]:
     secret_id = os.environ.get("TENCENT_SECRET_ID")
     secret_key = os.environ.get("TENCENT_SECRET_KEY")
     bucket = os.environ.get("TENCENT_BUCKET")
@@ -18,32 +33,40 @@ def _get_cos_client() -> tuple[CosS3Client, str, str]:
     if not all([secret_id, secret_key, bucket, region]):
         raise HTTPException(
             status_code=500,
-            detail="COS credentials not configured. Set TENCENT_SECRET_ID, "
-                   "TENCENT_SECRET_KEY, TENCENT_BUCKET, TENCENT_REGION.",
+            detail="COS credentials not configured.",
         )
 
     config = CosConfig(Region=region, SecretId=secret_id, SecretKey=secret_key)
-    client = CosS3Client(config)
-    return client, bucket, region
+    return CosS3Client(config), bucket
 
 
-@router.get("/auth", response_model=UploadAuthResponse)
-def get_upload_auth():
-    client, bucket, _ = _get_cos_client()
-
-    ext_map = {".jpg": "photo", ".jpeg": "photo", ".png": "photo", ".gif": "photo",
-               ".mp4": "video", ".mov": "video", ".webm": "video"}
-    # Default to jpg; front-end should append correct extension via `key`
-    key = f"moments/{uuid.uuid4().hex}.jpg"
-
+def _make_presigned_url(client: CosS3Client, bucket: str, mime: str) -> UploadAuthResponse:
+    ext = ALLOWED_EXTENSIONS.get(mime, ".jpg")
+    key = f"moments/{uuid.uuid4().hex}{ext}"
     try:
         upload_url = client.get_presigned_url(
             Method="PUT",
             Bucket=bucket,
             Key=key,
-            Expired=900,  # 15 minutes
+            Expired=900,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate presigned URL: {e}")
-
     return UploadAuthResponse(upload_url=upload_url, key=key)
+
+
+@router.get("/auth", response_model=BatchUploadAuthResponse)
+def get_upload_auth(
+    mimes: list[str] = Query(..., description="每个文件的 MIME 类型，e.g. image/jpeg"),
+    _: None = Depends(_check_access),
+):
+    """
+    批量获取预签名上传 URL。
+    前端传入每个文件的 MIME 类型列表，后端返回对应数量的 {upload_url, key}。
+    """
+    if len(mimes) > 9:
+        raise HTTPException(status_code=400, detail="最多同时上传 9 个文件")
+
+    client, bucket = _get_cos_client()
+    items = [_make_presigned_url(client, bucket, mime) for mime in mimes]
+    return BatchUploadAuthResponse(items=items)

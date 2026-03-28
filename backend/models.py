@@ -1,6 +1,6 @@
 from datetime import datetime
-from sqlalchemy import String, DateTime, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import String, DateTime, JSON, ForeignKey, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 
 
@@ -10,8 +10,32 @@ class Moment(Base):
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(String(2000), nullable=True)
-    media_url: Mapped[str] = mapped_column(String(1000), nullable=False)
-    media_type: Mapped[str] = mapped_column(String(10), nullable=False)  # 'photo' | 'video'
+    media_list: Mapped[list] = mapped_column(JSON, nullable=False)          # [{"url": "...", "type": "photo|video"}]
+    ai_tags: Mapped[list | None] = mapped_column(JSON, nullable=True)       # ["合照", "户外", ...]
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=func.now(), nullable=False
+        DateTime, server_default=func.now(), nullable=False
     )
+
+    # 一对多：删除 Moment 时自动级联删除旗下所有 Comment
+    comments: Mapped[list["Comment"]] = relationship(
+        "Comment",
+        back_populates="moment",
+        cascade="all, delete-orphan",
+        order_by="Comment.created_at",
+    )
+
+
+class Comment(Base):
+    __tablename__ = "comments"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    moment_id: Mapped[int] = mapped_column(
+        ForeignKey("moments.id"), nullable=False, index=True
+    )
+    role: Mapped[str] = mapped_column(String(50), nullable=False)       # e.g. "👵 姥姥"
+    content: Mapped[str] = mapped_column(String(500), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    moment: Mapped["Moment"] = relationship("Moment", back_populates="comments")
