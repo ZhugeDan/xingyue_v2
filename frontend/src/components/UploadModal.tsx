@@ -1,89 +1,133 @@
-import { useRef, useState } from 'react'
-import { X, UploadCloud, FileImage, FileVideo, CheckCircle2, Loader2 } from 'lucide-react'
+import { useRef, useState, useCallback } from 'react'
+import { X, UploadCloud, CheckCircle2, Loader2, Plus } from 'lucide-react'
+import { apiFetch, UnauthorizedError } from '../utils/api'
 
-// ⚠️ 替换为你的腾讯云 COS Bucket 域名
 const COS_BASE_URL = 'https://xingyue-1317852266.cos.ap-beijing.myqcloud.com'
+const MAX_FILES = 9
+const ACCEPTED = 'image/jpeg,image/png,image/gif,video/mp4,video/quicktime,video/webm'
+
+interface FileEntry {
+  file: File
+  preview: string
+  type: 'photo' | 'video'
+}
 
 interface Props {
   onClose: () => void
   onUploaded: () => void
+  onAuthError: () => void
 }
 
-type Step = 'idle' | 'uploading-cos' | 'saving' | 'done' | 'error'
+type Step = 'idle' | 'uploading' | 'saving' | 'done' | 'error'
 
-export default function UploadModal({ onClose, onUploaded }: Props) {
+/** PUT a single file to COS, returns when complete */
+function putToCOS(file: File, uploadUrl: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('PUT', uploadUrl)
+    xhr.setRequestHeader('Content-Type', file.type)
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve()
+      else reject(new Error(`COS 上传失败 (${xhr.status})`))
+    }
+    xhr.onerror = () => reject(new Error('网络错误，COS 上传中断'))
+    xhr.send(file)
+  })
+}
+
+function detectType(file: File): 'photo' | 'video' {
+  return file.type.startsWith('video/') ? 'video' : 'photo'
+}
+
+/** CSS grid columns based on count */
+function gridCols(n: number): string {
+  if (n === 1) return 'grid-cols-1'
+  if (n <= 4) return 'grid-cols-2'
+  return 'grid-cols-3'
+}
+
+export default function UploadModal({ onClose, onUploaded, onAuthError }: Props) {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
-  const [file, setFile] = useState<File | null>(null)
-  const [preview, setPreview] = useState<string | null>(null)
+  const [entries, setEntries] = useState<FileEntry[]>([])
   const [step, setStep] = useState<Step>('idle')
+  const [uploadedCount, setUploadedCount] = useState(0)
   const [errorMsg, setErrorMsg] = useState('')
-  const [progress, setProgress] = useState(0)
   const fileRef = useRef<HTMLInputElement>(null)
 
-  const ACCEPTED = 'image/jpeg,image/png,image/gif,video/mp4,video/quicktime,video/webm'
+  const busy = step === 'uploading' || step === 'saving'
 
-  function detectMediaType(f: File): 'photo' | 'video' {
-    return f.type.startsWith('video/') ? 'video' : 'photo'
-  }
+  // ── File selection ──────────────────────────────────────────────────────
+  const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const picked = Array.from(e.target.files ?? [])
+    if (!picked.length) return
 
-  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0]
-    if (!f) return
-    setFile(f)
-    setPreview(URL.createObjectURL(f))
-  }
+    setEntries((prev) => {
+      const combined = [...prev]
+      for (const file of picked) {
+        if (combined.length >= MAX_FILES) break
+        combined.push({
+          file,
+          preview: URL.createObjectURL(file),
+          type: detectType(file),
+        })
+      }
+      return combined
+    })
+    // Reset input so re-picking the same file works
+    if (fileRef.current) fileRef.current.value = ''
+  }, [])
 
+  const removeEntry = useCallback((idx: number) => {
+    setEntries((prev) => {
+      URL.revokeObjectURL(prev[idx].preview)
+      return prev.filter((_, i) => i !== idx)
+    })
+  }, [])
+
+  // ── Submit ──────────────────────────────────────────────────────────────
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!file || !title.trim()) return
+    if (!entries.length || !title.trim()) return
     setErrorMsg('')
+    setUploadedCount(0)
 
     try {
-      // 1. 获取预签名上传地址
-      setStep('uploading-cos')
-      setProgress(10)
-
-      const authRes = await fetch('/api/upload/auth')
+      // 1. Batch-fetch presigned URLs
+      setStep('uploading')
+      const params = new URLSearchParams()
+      entries.forEach((en) => params.append('mimes', en.file.type))
+      const authRes = await apiFetch(`/api/upload/auth?${params}`)
       if (!authRes.ok) throw new Error(`获取上传授权失败 (${authRes.status})`)
-      const { upload_url, key } = (await authRes.json()) as { upload_url: string; key: string }
+      const { items } = await authRes.json() as {
+        items: { upload_url: string; key: string }[]
+      }
 
-      setProgress(20)
+      // 2. Concurrent PUT to COS
+      let done = 0
+      await Promise.all(
+        entries.map((entry, i) =>
+          putToCOS(entry.file, items[i].upload_url).then(() => {
+            done++
+            setUploadedCount(done)
+          })
+        )
+      )
 
-      // 2. PUT 文件到腾讯云 COS（XMLHttpRequest 以便跟踪进度）
-      await new Promise<void>((resolve, reject) => {
-        const xhr = new XMLHttpRequest()
-        xhr.open('PUT', upload_url)
-        xhr.setRequestHeader('Content-Type', file.type)
-        xhr.upload.onprogress = (ev) => {
-          if (ev.lengthComputable) {
-            setProgress(20 + Math.round((ev.loaded / ev.total) * 65))
-          }
-        }
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) resolve()
-          else reject(new Error(`COS 上传失败 (${xhr.status})`))
-        }
-        xhr.onerror = () => reject(new Error('网络错误，COS 上传中断'))
-        xhr.send(file)
-      })
-
-      setProgress(90)
-
-      // 3. 拼接完整媒体 URL
-      const media_url = `${COS_BASE_URL}/${key}`
-      const media_type = detectMediaType(file)
-
-      // 4. 存入后端数据库
+      // 3. Save to backend
       setStep('saving')
-      const saveRes = await fetch('/api/moments', {
+      const mediaList = items.map((item, i) => ({
+        url: `${COS_BASE_URL}/${item.key}`,
+        type: entries[i].type,
+      }))
+
+      const saveRes = await apiFetch('/api/moments/', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title: title.trim(),
           description: description.trim() || undefined,
-          media_url,
-          media_type,
+          media_list: mediaList,
         }),
       })
       if (!saveRes.ok) {
@@ -91,26 +135,24 @@ export default function UploadModal({ onClose, onUploaded }: Props) {
         throw new Error(`保存失败 (${saveRes.status})：${detail}`)
       }
 
-      setProgress(100)
       setStep('done')
-
-      // 短暂停留后关闭并刷新
       setTimeout(onUploaded, 800)
     } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onAuthError()
+        return
+      }
       setErrorMsg(err instanceof Error ? err.message : String(err))
       setStep('error')
     }
   }
 
-  const busy = step === 'uploading-cos' || step === 'saving'
-
+  // ── Render ──────────────────────────────────────────────────────────────
   return (
-    /* Backdrop */
     <div
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm p-4"
       onClick={(e) => e.target === e.currentTarget && !busy && onClose()}
     >
-      {/* Panel */}
       <div className="w-full max-w-lg bg-white rounded-3xl shadow-2xl overflow-hidden animate-in slide-in-from-bottom-4 duration-300">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
@@ -125,14 +167,15 @@ export default function UploadModal({ onClose, onUploaded }: Props) {
           )}
         </div>
 
-        {/* Success state */}
+        {/* Success */}
         {step === 'done' ? (
           <div className="flex flex-col items-center gap-3 py-14 text-emerald-500">
             <CheckCircle2 size={48} strokeWidth={1.5} />
             <p className="text-base font-medium">发布成功！</p>
           </div>
         ) : (
-          <form onSubmit={handleSubmit} className="px-5 py-5 space-y-4">
+          <form onSubmit={handleSubmit} className="px-5 py-5 space-y-4 max-h-[80vh] overflow-y-auto">
+
             {/* Title */}
             <div>
               <label className="block text-xs font-medium text-slate-500 mb-1.5">
@@ -166,64 +209,107 @@ export default function UploadModal({ onClose, onUploaded }: Props) {
               />
             </div>
 
-            {/* File picker */}
+            {/* Media section */}
             <div>
               <label className="block text-xs font-medium text-slate-500 mb-1.5">
                 媒体文件 <span className="text-rose-400">*</span>
+                <span className="ml-1 text-slate-300 font-normal">（最多 {MAX_FILES} 张）</span>
               </label>
+
               <input
                 ref={fileRef}
                 type="file"
                 accept={ACCEPTED}
+                multiple
                 onChange={handleFileChange}
                 disabled={busy}
                 className="hidden"
               />
-              <button
-                type="button"
-                onClick={() => fileRef.current?.click()}
-                disabled={busy}
-                className="w-full flex flex-col items-center gap-2 rounded-xl border-2 border-dashed border-slate-200 hover:border-rose-300 bg-slate-50 hover:bg-rose-50 transition-colors py-5 disabled:opacity-50"
-              >
-                <UploadCloud size={28} className="text-slate-300" />
-                <span className="text-sm text-slate-400">
-                  {file ? file.name : '点击选择图片或视频'}
-                </span>
-              </button>
+
+              {entries.length === 0 ? (
+                /* Empty picker */
+                <button
+                  type="button"
+                  onClick={() => fileRef.current?.click()}
+                  disabled={busy}
+                  className="w-full flex flex-col items-center gap-2 rounded-xl border-2 border-dashed border-slate-200 hover:border-rose-300 bg-slate-50 hover:bg-rose-50 transition-colors py-8 disabled:opacity-50"
+                >
+                  <UploadCloud size={28} className="text-slate-300" />
+                  <span className="text-sm text-slate-400">点击选择图片或视频（可多选）</span>
+                </button>
+              ) : (
+                /* Thumbnail grid */
+                <div className={`grid gap-1.5 ${gridCols(entries.length)}`}>
+                  {entries.map((en, idx) => (
+                    <div key={idx} className="relative aspect-square rounded-xl overflow-hidden bg-slate-100 group">
+                      {en.type === 'photo' ? (
+                        <img
+                          src={en.preview}
+                          alt=""
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <video
+                          src={en.preview}
+                          className="w-full h-full object-cover"
+                          muted
+                        />
+                      )}
+                      {/* Remove button */}
+                      {!busy && (
+                        <button
+                          type="button"
+                          onClick={() => removeEntry(idx)}
+                          className="absolute top-1 right-1 p-0.5 rounded-full bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          <X size={12} />
+                        </button>
+                      )}
+                      {/* Video badge */}
+                      {en.type === 'video' && (
+                        <span className="absolute bottom-1 left-1 text-[10px] bg-black/50 text-white px-1.5 py-0.5 rounded-full">
+                          视频
+                        </span>
+                      )}
+                    </div>
+                  ))}
+
+                  {/* Add more cell */}
+                  {entries.length < MAX_FILES && !busy && (
+                    <button
+                      type="button"
+                      onClick={() => fileRef.current?.click()}
+                      className="aspect-square rounded-xl border-2 border-dashed border-slate-200 hover:border-rose-300 bg-slate-50 hover:bg-rose-50 transition-colors flex items-center justify-center"
+                    >
+                      <Plus size={20} className="text-slate-300" />
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
-            {/* Preview */}
-            {preview && file && (
-              <div className="rounded-xl overflow-hidden border border-slate-100">
-                {detectMediaType(file) === 'photo' ? (
-                  <img src={preview} alt="preview" className="w-full max-h-52 object-cover" />
-                ) : (
-                  <video src={preview} controls className="w-full max-h-52 bg-black" />
-                )}
-                <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 text-xs text-slate-400">
-                  {detectMediaType(file) === 'photo' ? (
-                    <FileImage size={13} />
-                  ) : (
-                    <FileVideo size={13} />
-                  )}
-                  {(file.size / 1024 / 1024).toFixed(1)} MB
+            {/* Upload progress */}
+            {step === 'uploading' && (
+              <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-50 rounded-xl px-4 py-3">
+                <Loader2 size={14} className="animate-spin text-rose-400 flex-shrink-0" />
+                <span>
+                  上传中 {uploadedCount}/{entries.length}
+                  <span className="text-slate-300 ml-1">· 请勿关闭页面</span>
+                </span>
+                {/* Mini progress bar */}
+                <div className="ml-auto w-20 bg-slate-200 rounded-full h-1 overflow-hidden flex-shrink-0">
+                  <div
+                    className="h-full bg-rose-400 rounded-full transition-all duration-300"
+                    style={{ width: `${(uploadedCount / entries.length) * 100}%` }}
+                  />
                 </div>
               </div>
             )}
 
-            {/* Progress bar */}
-            {busy && (
-              <div className="space-y-1.5">
-                <div className="flex items-center gap-2 text-xs text-slate-500">
-                  <Loader2 size={13} className="animate-spin" />
-                  {step === 'uploading-cos' ? '正在上传文件…' : '正在保存动态…'}
-                </div>
-                <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
-                  <div
-                    className="h-full bg-rose-400 rounded-full transition-all duration-300"
-                    style={{ width: `${progress}%` }}
-                  />
-                </div>
+            {step === 'saving' && (
+              <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-50 rounded-xl px-4 py-3">
+                <Loader2 size={14} className="animate-spin text-rose-400 flex-shrink-0" />
+                正在保存动态…
               </div>
             )}
 
@@ -235,10 +321,10 @@ export default function UploadModal({ onClose, onUploaded }: Props) {
             {/* Submit */}
             <button
               type="submit"
-              disabled={busy || !file || !title.trim()}
+              disabled={busy || !entries.length || !title.trim()}
               className="w-full bg-rose-500 hover:bg-rose-600 disabled:bg-slate-200 disabled:text-slate-400 text-white font-medium text-sm py-3 rounded-xl transition-colors active:scale-[0.98]"
             >
-              {busy ? '发布中…' : '发布动态'}
+              {busy ? '发布中…' : `确认发布${entries.length > 0 ? `（${entries.length} 个文件）` : ''}`}
             </button>
           </form>
         )}

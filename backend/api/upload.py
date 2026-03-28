@@ -1,10 +1,13 @@
 import os
 import uuid
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
 from qcloud_cos import CosConfig, CosS3Client
 
+from database import get_db
 from schemas import BatchUploadAuthResponse, UploadAuthResponse
+from deps import AuditContext, check_access
 
 router = APIRouter(prefix="/api/upload", tags=["upload"])
 
@@ -16,12 +19,6 @@ ALLOWED_EXTENSIONS = {
     "video/quicktime": ".mov",
     "video/webm": ".webm",
 }
-
-
-def _check_access(x_access_password: str | None = Header(default=None)):
-    required = os.environ.get("ACCESS_PASSWORD")
-    if required and x_access_password != required:
-        raise HTTPException(status_code=401, detail="暗号错误")
 
 
 def _get_cos_client() -> tuple[CosS3Client, str]:
@@ -58,7 +55,8 @@ def _make_presigned_url(client: CosS3Client, bucket: str, mime: str) -> UploadAu
 @router.get("/auth", response_model=BatchUploadAuthResponse)
 def get_upload_auth(
     mimes: list[str] = Query(..., description="每个文件的 MIME 类型，e.g. image/jpeg"),
-    _: None = Depends(_check_access),
+    db: Session = Depends(get_db),
+    audit: AuditContext = Depends(check_access),
 ):
     """
     批量获取预签名上传 URL。
@@ -69,4 +67,5 @@ def get_upload_auth(
 
     client, bucket = _get_cos_client()
     items = [_make_presigned_url(client, bucket, mime) for mime in mimes]
+    audit.write(db, "GET_UPLOAD_AUTH")
     return BatchUploadAuthResponse(items=items)

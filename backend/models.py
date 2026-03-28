@@ -4,6 +4,19 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from database import Base
 
 
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    action: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    resource_id: Mapped[int | None] = mapped_column(nullable=True)
+    ip_address: Mapped[str] = mapped_column(String(45), nullable=False)   # IPv4 or IPv6
+    user_agent: Mapped[str] = mapped_column(String(500), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False, index=True
+    )
+
+
 class Moment(Base):
     __tablename__ = "moments"
 
