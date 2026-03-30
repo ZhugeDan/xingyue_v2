@@ -6,3 +6,4 @@ python-dotenv==1.0.1
 cos-python-sdk-v5==1.9.30
 python-multipart==0.0.12
 httpx==0.27.2
+# ip2region SDK 已离线集成到 backend/ip2region/ 目录，数据库文件为 ip2region.xdb

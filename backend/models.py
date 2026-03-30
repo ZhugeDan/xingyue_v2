@@ -25,6 +25,7 @@ class Moment(Base):
     description: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     media_list: Mapped[list] = mapped_column(JSON, nullable=False)          # [{"url": "...", "type": "photo|video"}]
     ai_tags: Mapped[list | None] = mapped_column(JSON, nullable=True)       # ["合照", "户外", ...]
+    location: Mapped[str | None] = mapped_column(String(50), nullable=True) # IP 属地，如 "河北"
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
@@ -47,6 +48,7 @@ class Comment(Base):
     )
     role: Mapped[str] = mapped_column(String(50), nullable=False)       # e.g. "👵 姥姥"
     content: Mapped[str] = mapped_column(String(500), nullable=False)
+    location: Mapped[str | None] = mapped_column(String(50), nullable=True) # IP 属地，如 "河北"
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

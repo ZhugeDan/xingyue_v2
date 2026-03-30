@@ -11,6 +11,7 @@ from fastapi import Depends, Header, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from database import get_db
+from ip_location import get_real_ip
 from models import AuditLog
 
 
@@ -38,7 +39,7 @@ class AuditContext:
 
 def _resolve(request: Request, header_pwd: str | None, query_pwd: str | None) -> AuditContext:
     """公共解析逻辑，被两个依赖复用。"""
-    ip = request.client.host if request.client else "unknown"
+    ip = get_real_ip(request)
     ua = request.headers.get("user-agent", "")
     return AuditContext(ip=ip, user_agent=ua)
 
@@ -57,7 +58,7 @@ def check_access(
     if required and provided != required:
         raise HTTPException(status_code=401, detail="暗号错误")
 
-    ip = request.client.host if request.client else "unknown"
+    ip = get_real_ip(request)
     ua = request.headers.get("user-agent", "")
     return AuditContext(ip=ip, user_agent=ua, is_admin=True)
 
@@ -76,7 +77,7 @@ def guest_access(
     required = os.environ.get("ACCESS_PASSWORD")
     provided = x_access_password or password
 
-    ip = request.client.host if request.client else "unknown"
+    ip = get_real_ip(request)
     ua = request.headers.get("user-agent", "")
 
     if not required:

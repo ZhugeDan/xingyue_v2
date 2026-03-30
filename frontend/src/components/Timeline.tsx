@@ -3,7 +3,7 @@ import { formatDistanceToNow, format } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
 import {
   ImageOff, Loader2, Camera, Clapperboard, Images,
-  Play, MessageCircle, Send, Trash2, X, CalendarDays,
+  Play, MessageCircle, Send, Trash2, X, CalendarDays, MapPin,
 } from 'lucide-react'
 import Calendar from 'react-calendar'
 import 'react-calendar/dist/Calendar.css'
@@ -24,6 +24,7 @@ interface Comment {
   id: number
   role: string
   content: string
+  location?: string | null
   created_at: string
 }
 
@@ -33,6 +34,7 @@ interface Moment {
   description: string | null
   media_list: MediaItem[]
   ai_tags: string[] | null
+  location?: string | null
   created_at: string
   comments: Comment[]
 }
@@ -122,6 +124,18 @@ function DotIcon({ items }: { items: MediaItem[] }) {
   if (hasVideo) return <Clapperboard size={10} className="text-rose-500" />
   if (multi)    return <Images size={10} className="text-rose-500" />
   return <Camera size={10} className="text-rose-500" />
+}
+
+// ── LocationBadge ─────────────────────────────────────────────────────────────
+
+function LocationBadge({ location }: { location?: string | null }) {
+  if (!location || location === '未知') return null
+  return (
+    <span className="inline-flex items-center gap-0.5 text-[10px] text-slate-400 flex-shrink-0">
+      <MapPin size={10} className="text-slate-300" />
+      {location}
+    </span>
+  )
 }
 
 // ── MediaGrid ─────────────────────────────────────────────────────────────────
@@ -302,6 +316,7 @@ function CommentSection({
                     <div className="flex-1 min-w-0 bg-slate-50 rounded-xl px-3 py-2">
                       <div className="flex items-baseline gap-2 mb-0.5">
                         <span className="text-xs font-semibold text-slate-700">{name}</span>
+                        <LocationBadge location={c.location} />
                         <span className="text-[10px] text-slate-300">
                           {formatDistanceToNow(parseUTC(c.created_at), { addSuffix: true, locale: zhCN })}
                         </span>
@@ -972,7 +987,7 @@ export default function Timeline({ isAdmin, onAuthError, onAdminStatus }: Props)
                         />
                       ) : null}
 
-                      {/* Footer: time + AI tags */}
+                      {/* Footer: time + location + AI tags */}
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-0.5">
                         <time
                           className="text-xs text-slate-400 flex-shrink-0 cursor-default"
@@ -980,6 +995,8 @@ export default function Timeline({ isAdmin, onAuthError, onAdminStatus }: Props)
                         >
                           {formatDistanceToNow(parseUTC(m.created_at), { addSuffix: true, locale: zhCN })}
                         </time>
+
+                        <LocationBadge location={m.location} />
 
                         {displayTags.length > 0 && (
                           <div className="flex flex-wrap gap-1">

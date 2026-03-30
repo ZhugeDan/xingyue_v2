@@ -19,6 +19,7 @@ class CommentResponse(BaseModel):
     id: int
     role: str
     content: str
+    location: str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -38,6 +39,7 @@ class MomentResponse(BaseModel):
     description: str | None
     media_list: list[MediaItem]
     ai_tags: list[str] | None
+    location: str | None = None
     created_at: datetime
     comments: list[CommentResponse] = []
 

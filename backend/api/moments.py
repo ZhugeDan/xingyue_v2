@@ -15,6 +15,7 @@ from database import SessionLocal, get_db
 from models import Moment, Comment
 from schemas import MomentCreate, MomentResponse, MomentsListResponse, CommentCreate, CommentResponse
 from deps import AuditContext, check_access, guest_access
+from ip_location import get_ip_location
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,7 @@ def create_moment(
         description=data["description"],
         media_list=data["media_list"],
         ai_tags=None,
+        location=get_ip_location(audit.ip),
     )
     db.add(moment)
     db.commit()
@@ -153,7 +155,12 @@ def add_comment(
 ):
     if not db.get(Moment, moment_id):
         raise HTTPException(status_code=404, detail="动态不存在")
-    comment = Comment(moment_id=moment_id, role=payload.role, content=payload.content)
+    comment = Comment(
+        moment_id=moment_id,
+        role=payload.role,
+        content=payload.content,
+        location=get_ip_location(audit.ip),
+    )
     db.add(comment)
     db.commit()
     db.refresh(comment)
