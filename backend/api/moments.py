@@ -13,8 +13,8 @@ from qcloud_cos import CosConfig, CosS3Client
 
 from database import SessionLocal, get_db
 from models import Moment, Comment
-from schemas import MomentCreate, MomentResponse, CommentCreate, CommentResponse
-from deps import AuditContext, check_access
+from schemas import MomentCreate, MomentResponse, MomentsListResponse, CommentCreate, CommentResponse
+from deps import AuditContext, check_access, guest_access
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +79,10 @@ async def _ai_enrich(moment_id: int, image_urls: list[str]) -> None:
 
 # ── Moments ───────────────────────────────────────────────────────────────────
 
-@router.get("/", response_model=list[MomentResponse])
+@router.get("/", response_model=MomentsListResponse)
 def get_moments(
     db: Session = Depends(get_db),
-    audit: AuditContext = Depends(check_access),
+    audit: AuditContext = Depends(guest_access),   # 访客可无密码访问
 ):
     moments = (
         db.query(Moment)
@@ -90,8 +90,8 @@ def get_moments(
         .order_by(desc(Moment.created_at))
         .all()
     )
-    audit.write(db, "LIST_MOMENTS")
-    return moments
+    audit.write(db, "LIST_MOMENTS")   # 访客时此调用内部静默跳过
+    return MomentsListResponse(items=moments, is_admin=audit.is_admin)
 
 
 @router.post("/", response_model=MomentResponse, status_code=201)
@@ -222,9 +222,10 @@ def _save_stream_result(moment_id: int, full_text: str) -> None:
     解析流式输出，将日记文案和标签持久化到数据库。
     此接口为用户主动触发，始终覆写 description（即使已有值）。
     """
-    sep = "---TAGS---"
-    if sep in full_text:
-        desc_part, tags_raw = full_text.split(sep, 1)
+    sep_match = re.search(r'---\s*TAGS\s*---', full_text, re.IGNORECASE)
+    if sep_match:
+        desc_part = full_text[:sep_match.start()]
+        tags_raw  = full_text[sep_match.end():]
     else:
         desc_part, tags_raw = full_text, ""
 

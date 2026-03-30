@@ -51,3 +51,9 @@ class UploadAuthResponse(BaseModel):
 
 class BatchUploadAuthResponse(BaseModel):
     items: list[UploadAuthResponse]
+
+
+class MomentsListResponse(BaseModel):
+    """GET /api/moments/ 的响应体，包含权限标记。"""
+    items: list[MomentResponse]
+    is_admin: bool

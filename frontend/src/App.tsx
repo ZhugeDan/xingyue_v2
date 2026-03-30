@@ -1,13 +1,23 @@
 import { useState, useCallback } from 'react'
-import { BookHeart, PlusCircle, Lock, Loader2 } from 'lucide-react'
+import { BookHeart, PlusCircle, Lock, Loader2, Eye } from 'lucide-react'
 import Timeline from './components/Timeline'
 import UploadModal from './components/UploadModal'
-import { getPassword, savePassword, clearPassword, verifyPassword } from './utils/api'
+import {
+  getPassword, savePassword, clearPassword,
+  enterGuestMode, isGuestMode, clearGuestMode,
+  verifyPassword,
+} from './utils/api'
 
 // ── 密码门 ──────────────────────────────────────────────────────────────────
-function PasswordGate({ onSuccess }: { onSuccess: () => void }) {
-  const [pwd, setPwd] = useState('')
-  const [error, setError] = useState('')
+function PasswordGate({
+  onSuccess,
+  onGuest,
+}: {
+  onSuccess: () => void
+  onGuest: () => void
+}) {
+  const [pwd,     setPwd]     = useState('')
+  const [error,   setError]   = useState('')
   const [loading, setLoading] = useState(false)
 
   async function handleSubmit(e: React.FormEvent) {
@@ -52,7 +62,8 @@ function PasswordGate({ onSuccess }: { onSuccess: () => void }) {
               placeholder="请输入访问暗号…"
               autoFocus
               disabled={loading}
-              className="w-full pl-9 pr-4 py-3 rounded-xl border border-slate-200 bg-slate-50 text-sm focus:outline-none focus:ring-2 focus:ring-rose-300 disabled:opacity-50 placeholder-slate-300"
+              className="w-full pl-9 pr-4 py-3 rounded-xl border border-slate-200 bg-slate-50 text-sm
+                focus:outline-none focus:ring-2 focus:ring-rose-300 disabled:opacity-50 placeholder-slate-300"
             />
           </div>
 
@@ -65,9 +76,29 @@ function PasswordGate({ onSuccess }: { onSuccess: () => void }) {
           <button
             type="submit"
             disabled={loading || !pwd.trim()}
-            className="w-full flex items-center justify-center gap-2 bg-rose-500 hover:bg-rose-600 disabled:bg-slate-200 disabled:text-slate-400 text-white font-medium text-sm py-3 rounded-xl transition-colors"
+            className="w-full flex items-center justify-center gap-2 bg-rose-500 hover:bg-rose-600
+              disabled:bg-slate-200 disabled:text-slate-400 text-white font-medium text-sm
+              py-3 rounded-xl transition-colors"
           >
             {loading ? <Loader2 size={16} className="animate-spin" /> : '进入'}
+          </button>
+
+          {/* 访客模式入口 */}
+          <div className="relative flex items-center">
+            <div className="flex-1 border-t border-slate-100" />
+            <span className="mx-3 text-xs text-slate-300">或</span>
+            <div className="flex-1 border-t border-slate-100" />
+          </div>
+
+          <button
+            type="button"
+            onClick={onGuest}
+            className="w-full flex items-center justify-center gap-2 border border-slate-200
+              hover:border-rose-200 hover:bg-rose-50 text-slate-500 hover:text-rose-500
+              font-medium text-sm py-3 rounded-xl transition-all duration-200"
+          >
+            <Eye size={15} />
+            随便看看（访客模式）
           </button>
         </form>
       </div>
@@ -77,13 +108,18 @@ function PasswordGate({ onSuccess }: { onSuccess: () => void }) {
 
 // ── 主应用 ──────────────────────────────────────────────────────────────────
 export default function App() {
-  const [authed, setAuthed] = useState<boolean>(() => Boolean(getPassword()))
+  // authed: 已通过密码 OR 主动进入访客模式
+  const [authed,    setAuthed]    = useState<boolean>(() => Boolean(getPassword()) || isGuestMode())
+  // isAdmin: 由后端 GET /api/moments/ 返回的 is_admin 字段决定，初始值从 localStorage 推断
+  const [isAdmin,   setIsAdmin]   = useState<boolean>(() => Boolean(getPassword()))
   const [modalOpen, setModalOpen] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
 
   const handleAuthError = useCallback(() => {
     clearPassword()
+    clearGuestMode()
     setAuthed(false)
+    setIsAdmin(false)
     setModalOpen(false)
   }, [])
 
@@ -92,8 +128,22 @@ export default function App() {
     setRefreshKey((k) => k + 1)
   }, [])
 
+  /** Timeline 从 API 拿到 is_admin 后回调，确保与后端状态同步 */
+  const handleAdminStatus = useCallback((admin: boolean) => {
+    setIsAdmin(admin)
+  }, [])
+
   if (!authed) {
-    return <PasswordGate onSuccess={() => setAuthed(true)} />
+    return (
+      <PasswordGate
+        onSuccess={() => { setIsAdmin(true); setAuthed(true) }}
+        onGuest={() => {
+          enterGuestMode()
+          setIsAdmin(false)
+          setAuthed(true)
+        }}
+      />
+    )
   }
 
   return (
@@ -105,23 +155,45 @@ export default function App() {
             <BookHeart size={22} />
             <span className="font-semibold text-lg tracking-tight text-slate-700">星月日记</span>
           </div>
-          <button
-            onClick={() => setModalOpen(true)}
-            className="flex items-center gap-1.5 bg-rose-500 hover:bg-rose-600 active:scale-95 transition-all text-white text-sm font-medium px-4 py-2 rounded-full shadow-md"
-          >
-            <PlusCircle size={16} />
-            发动态
-          </button>
+
+          {isAdmin ? (
+            <button
+              onClick={() => setModalOpen(true)}
+              className="flex items-center gap-1.5 bg-rose-500 hover:bg-rose-600 active:scale-95
+                transition-all text-white text-sm font-medium px-4 py-2 rounded-full shadow-md"
+            >
+              <PlusCircle size={16} />
+              发动态
+            </button>
+          ) : (
+            /* 访客标识 + 一键切换 */
+            <button
+              onClick={() => {
+                clearGuestMode()
+                setAuthed(false)
+              }}
+              className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-rose-400
+                border border-slate-200 hover:border-rose-200 px-3 py-1.5 rounded-full transition-all"
+            >
+              <Eye size={13} />
+              访客模式
+            </button>
+          )}
         </div>
       </header>
 
       {/* Main content */}
       <main className="max-w-2xl mx-auto px-4 py-6">
-        <Timeline key={refreshKey} onAuthError={handleAuthError} />
+        <Timeline
+          key={refreshKey}
+          isAdmin={isAdmin}
+          onAuthError={handleAuthError}
+          onAdminStatus={handleAdminStatus}
+        />
       </main>
 
-      {/* Upload modal */}
-      {modalOpen && (
+      {/* Upload modal — 仅管理员能打开 */}
+      {modalOpen && isAdmin && (
         <UploadModal
           onClose={() => setModalOpen(false)}
           onUploaded={handleUploaded}

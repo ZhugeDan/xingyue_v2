@@ -3,8 +3,10 @@ import { formatDistanceToNow, format } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
 import {
   ImageOff, Loader2, Camera, Clapperboard, Images,
-  Play, MessageCircle, Send, Trash2, X,
+  Play, MessageCircle, Send, Trash2, X, CalendarDays,
 } from 'lucide-react'
+import Calendar from 'react-calendar'
+import 'react-calendar/dist/Calendar.css'
 import YALightbox from 'yet-another-react-lightbox'
 import 'yet-another-react-lightbox/styles.css'
 import Zoom from 'yet-another-react-lightbox/plugins/zoom'
@@ -42,13 +44,16 @@ interface Group {
 }
 
 interface Props {
+  isAdmin: boolean
   onAuthError: () => void
+  /** 后端返回 is_admin 后回调，让 App 与后端状态同步 */
+  onAdminStatus: (isAdmin: boolean) => void
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const GRID_LIMIT = 9
-const TAG_SEP = '---TAGS---'
+const TAG_SEP_RE = /---\s*TAGS\s*---/i
 
 const TAG_PALETTE = [
   'bg-blue-50 text-blue-600',
@@ -68,22 +73,20 @@ const parseUTC = (s: string) => new Date(s.endsWith('Z') ? s : `${s}Z`)
 const sectionId = (year: number, month: number) =>
   `section-${year}-${String(month).padStart(2, '0')}`
 
-/** 将流式累积文本拆分为日记文案 + 标签数组。 */
 function parseStreamResult(full: string): { description: string; tags: string[] } {
-  let description = full
+  const idx = full.search(TAG_SEP_RE)
+  if (idx === -1) return { description: full.trim(), tags: [] }
+  const description = full.slice(0, idx).trim()
+  const after = full.slice(idx).replace(TAG_SEP_RE, '')
+  const m = after.match(/\[[\s\S]*?\]/)
   let tags: string[] = []
-  if (full.includes(TAG_SEP)) {
-    const [d, t] = full.split(TAG_SEP, 2)
-    description = d.trim()
-    const m = t.match(/\[[\s\S]*?\]/)
-    if (m) {
-      try {
-        const parsed = JSON.parse(m[0])
-        if (Array.isArray(parsed)) tags = parsed.map(String).filter(Boolean)
-      } catch { /* ignore */ }
-    }
+  if (m) {
+    try {
+      const parsed = JSON.parse(m[0])
+      if (Array.isArray(parsed)) tags = parsed.map(String).filter(Boolean)
+    } catch { /* ignore */ }
   }
-  return { description: description.trim(), tags }
+  return { description, tags }
 }
 
 /** Group a newest-first sorted moment list into year/month buckets (preserves order). */
@@ -127,10 +130,12 @@ function MediaGrid({
   items,
   onItemClick,
   onDeleteMedia,
+  isAdmin,
 }: {
   items: MediaItem[]
   onItemClick: (idx: number) => void
   onDeleteMedia: (idx: number) => void
+  isAdmin: boolean
 }) {
   const n = items.length
   if (n === 0) return null
@@ -155,7 +160,7 @@ function MediaGrid({
             </>
           )}
         </div>
-        {n > 1 && (
+        {n > 1 && isAdmin && (
           <button
             onClick={(e) => { e.stopPropagation(); onDeleteMedia(0) }}
             className="absolute top-2 right-2 p-1.5 rounded-full bg-black/40 hover:bg-red-500
@@ -204,14 +209,16 @@ function MediaGrid({
               </div>
             )}
 
-            <button
-              onClick={(e) => { e.stopPropagation(); onDeleteMedia(idx) }}
-              className="absolute top-1.5 right-1.5 p-1.5 rounded-full bg-black/40 hover:bg-red-500
-                text-white opacity-0 group-hover:opacity-100 transition-all z-10"
-              title="删除此文件"
-            >
-              <Trash2 size={11} />
-            </button>
+            {isAdmin && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onDeleteMedia(idx) }}
+                className="absolute top-1.5 right-1.5 p-1.5 rounded-full bg-black/40 hover:bg-red-500
+                  text-white opacity-0 group-hover:opacity-100 transition-all z-10"
+                title="删除此文件"
+              >
+                <Trash2 size={11} />
+              </button>
+            )}
           </div>
         )
       })}
@@ -225,10 +232,12 @@ function CommentSection({
   momentId,
   initialComments,
   onAuthError,
+  isAdmin,
 }: {
   momentId: number
   initialComments: Comment[]
   onAuthError: () => void
+  isAdmin: boolean
 }) {
   const [open,       setOpen]       = useState(false)
   const [comments,   setComments]   = useState<Comment[]>(initialComments)
@@ -299,6 +308,7 @@ function CommentSection({
                       </div>
                       <p className="text-sm text-slate-600 leading-snug">{c.content}</p>
                     </div>
+                    {isAdmin && (
                     <button
                       onClick={() => handleDeleteComment(c.id)}
                       className="flex-shrink-0 mt-1 p-1 rounded-full text-slate-300
@@ -308,12 +318,14 @@ function CommentSection({
                     >
                       <X size={12} />
                     </button>
+                    )}
                   </div>
                 )
               })}
             </div>
           )}
 
+          {isAdmin && (
           <div>
             <p className="text-[10px] text-slate-400 mb-1.5">我是：</p>
             <div className="flex flex-wrap gap-1.5">
@@ -332,8 +344,9 @@ function CommentSection({
               ))}
             </div>
           </div>
+          )}
 
-          {selectedId && (
+          {isAdmin && selectedId && (
             <div className="flex gap-2">
               <input
                 value={text}
@@ -434,9 +447,9 @@ function AiWriteButton({
             if (obj.text) {
               accumulated += obj.text
 
-              if (accumulated.includes(TAG_SEP)) {
-                // Split: show description part; try to extract any tags so far
-                const [descPart, tagsPart] = accumulated.split(TAG_SEP, 2)
+              if (accumulated.search(TAG_SEP_RE) !== -1) {
+                const sepIdx = accumulated.search(TAG_SEP_RE)
+                const [descPart, tagsPart] = [accumulated.slice(0, sepIdx), accumulated.slice(sepIdx).replace(TAG_SEP_RE, '')]
                 setDisplayText(descPart)
                 const m = tagsPart.match(/\[[\s\S]*?\]/)
                 if (m) {
@@ -596,9 +609,84 @@ function SlimNav({
   )
 }
 
+// ── CalendarWidget ────────────────────────────────────────────────────────────
+
+type CalendarValue = Date | null
+
+function CalendarWidget({ moments }: { moments: Moment[] }) {
+  const [mobileOpen, setMobileOpen] = useState(false)
+
+  const momentDateSet = useMemo(
+    () => new Set(moments.map((m) => format(parseUTC(m.created_at), 'yyyy-MM-dd'))),
+    [moments],
+  )
+
+  function scrollToNearest(date: Date) {
+    if (moments.length === 0) return
+    const target = date.getTime()
+    const closest = moments.reduce((a, b) =>
+      Math.abs(parseUTC(a.created_at).getTime() - target) <=
+      Math.abs(parseUTC(b.created_at).getTime() - target) ? a : b,
+    )
+    document.getElementById(`moment-${closest.id}`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    setMobileOpen(false)
+  }
+
+  const cal = (
+    <Calendar
+      onClickDay={(v: CalendarValue) => v && scrollToNearest(v)}
+      locale="zh-CN"
+      className="rc-pink"
+      tileDisabled={({ date, view }) =>
+        view === 'month' && !momentDateSet.has(format(date, 'yyyy-MM-dd'))
+      }
+      tileClassName={({ date, view }) =>
+        view === 'month' && momentDateSet.has(format(date, 'yyyy-MM-dd'))
+          ? 'has-moment'
+          : null
+      }
+      tileContent={({ date, view }) =>
+        view === 'month' && momentDateSet.has(format(date, 'yyyy-MM-dd')) ? (
+          <span className="moment-dot" />
+        ) : null
+      }
+    />
+  )
+
+  return (
+    <>
+      {/* Desktop 2xl+: always-visible fixed panel */}
+      <div className="hidden 2xl:block fixed right-3 top-24 z-20
+        bg-white/80 backdrop-blur-md rounded-2xl shadow-xl border border-rose-100 p-3 overflow-hidden">
+        {cal}
+      </div>
+
+      {/* Mobile / tablet: floating button + popover */}
+      <div className="2xl:hidden fixed bottom-6 right-4 z-40 flex flex-col items-end gap-2">
+        {mobileOpen && (
+          <>
+            <div className="fixed inset-0" onClick={() => setMobileOpen(false)} />
+            <div className="relative bg-white/90 backdrop-blur-md rounded-2xl shadow-xl border border-rose-100 p-3 overflow-hidden">
+              {cal}
+            </div>
+          </>
+        )}
+        <button
+          onClick={() => setMobileOpen((o) => !o)}
+          className={`w-12 h-12 rounded-full shadow-lg flex items-center justify-center text-white transition-colors
+            ${mobileOpen ? 'bg-rose-600' : 'bg-rose-500 hover:bg-rose-600'}`}
+        >
+          <CalendarDays size={20} />
+        </button>
+      </div>
+    </>
+  )
+}
+
 // ── Main Timeline ─────────────────────────────────────────────────────────────
 
-export default function Timeline({ onAuthError }: Props) {
+export default function Timeline({ isAdmin, onAuthError, onAdminStatus }: Props) {
   const [moments,   setMoments]   = useState<Moment[]>([])
   const [loading,   setLoading]   = useState(true)
   const [error,     setError]     = useState<string | null>(null)
@@ -619,13 +707,17 @@ export default function Timeline({ onAuthError }: Props) {
         if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
         return r.json()
       })
-      .then((data: Moment[]) => { setMoments(data); setLoading(false) })
+      .then((data: { items: Moment[]; is_admin: boolean }) => {
+        setMoments(data.items)
+        onAdminStatus(data.is_admin)   // 让 App 与后端权限状态同步
+        setLoading(false)
+      })
       .catch((e: unknown) => {
         if (e instanceof UnauthorizedError) { onAuthError(); return }
         setError(e instanceof Error ? e.message : String(e))
         setLoading(false)
       })
-  }, [onAuthError])
+  }, [onAuthError, onAdminStatus])
 
   useEffect(() => { loadMoments() }, [loadMoments])
 
@@ -769,6 +861,7 @@ export default function Timeline({ onAuthError }: Props) {
 
       {/* Right-side slim navigation — rendered outside the scroll container */}
       <SlimNav groups={groups} activeId={activeSection} onSelect={scrollToSection} />
+      <CalendarWidget moments={moments} />
 
       {/* pr-10 reserves space so content never hides behind the slim nav */}
       <ol ref={timelineRef} className="relative border-l-2 border-rose-200 ml-3 pr-10">
@@ -812,8 +905,12 @@ export default function Timeline({ onAuthError }: Props) {
               </li>
 
               {/* ── Moments in this group ── */}
-              {group.moments.map((m) => (
-                <li key={m.id} className="mb-8 ml-6">
+              {group.moments.map((m) => {
+                const { description: cleanDesc, tags: parsedTags } = parseStreamResult(m.description ?? '')
+                const displayTags = m.ai_tags?.length ? m.ai_tags : parsedTags
+
+                return (
+                <li key={m.id} id={`moment-${m.id}`} className="mb-8 ml-6">
 
                   {/* Timeline dot */}
                   <span className="absolute -left-[11px] flex items-center justify-center w-5 h-5
@@ -829,6 +926,7 @@ export default function Timeline({ onAuthError }: Props) {
                       items={m.media_list}
                       onItemClick={(i) => openGallery(m.media_list, i)}
                       onDeleteMedia={(i) => handleDeleteMedia(m.id, i)}
+                      isAdmin={isAdmin}
                     />
 
                     <div className="px-4 pt-3 pb-2 space-y-2">
@@ -838,6 +936,7 @@ export default function Timeline({ onAuthError }: Props) {
                         <h3 className="font-semibold text-slate-800 text-base leading-snug flex-1">
                           {m.title}
                         </h3>
+                        {isAdmin && (
                         <button
                           onClick={() => handleDeleteMoment(m.id)}
                           className="flex-shrink-0 p-1.5 rounded-full text-slate-300
@@ -847,11 +946,12 @@ export default function Timeline({ onAuthError }: Props) {
                         >
                           <Trash2 size={14} />
                         </button>
+                        )}
                       </div>
 
-                      {m.description ? (
-                        <p className="text-sm text-slate-500 leading-relaxed">{m.description}</p>
-                      ) : (
+                      {cleanDesc ? (
+                        <p className="text-sm text-slate-500 leading-relaxed">{cleanDesc}</p>
+                      ) : isAdmin ? (
                         <AiWriteButton
                           momentId={m.id}
                           onAuthError={onAuthError}
@@ -870,7 +970,7 @@ export default function Timeline({ onAuthError }: Props) {
                             )
                           }
                         />
-                      )}
+                      ) : null}
 
                       {/* Footer: time + AI tags */}
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-0.5">
@@ -881,9 +981,9 @@ export default function Timeline({ onAuthError }: Props) {
                           {formatDistanceToNow(parseUTC(m.created_at), { addSuffix: true, locale: zhCN })}
                         </time>
 
-                        {m.ai_tags && m.ai_tags.length > 0 && (
+                        {displayTags.length > 0 && (
                           <div className="flex flex-wrap gap-1">
-                            {m.ai_tags.map((tag, i) => (
+                            {displayTags.map((tag, i) => (
                               <span
                                 key={tag}
                                 className={`text-xs px-2 py-0.5 rounded-full font-medium
@@ -901,10 +1001,12 @@ export default function Timeline({ onAuthError }: Props) {
                       momentId={m.id}
                       initialComments={m.comments}
                       onAuthError={onAuthError}
+                      isAdmin={isAdmin}
                     />
                   </div>
                 </li>
-              ))}
+                )
+              })}
 
             </Fragment>
           )
