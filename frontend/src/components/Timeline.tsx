@@ -966,11 +966,11 @@ export default function Timeline({ isAdmin, onAuthError, onAdminStatus }: Props)
 
                       {cleanDesc ? (
                         <p className="text-sm text-slate-500 leading-relaxed">{cleanDesc}</p>
-                      ) : isAdmin ? (
+                      ) : isAdmin && m.media_list.some((i) => i.type === 'photo') ? (
                         <AiWriteButton
                           momentId={m.id}
                           onAuthError={onAuthError}
-                          autoTrigger={m.media_list.length > 1}
+                          autoTrigger={m.media_list.filter((i) => i.type === 'photo').length > 1}
                           onComplete={(desc, tags) =>
                             setMoments((prev) =>
                               prev.map((mom) =>

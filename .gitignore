@@ -4,3 +4,5 @@
 .cursor
 backend/.venv
 backend/__pycache__
+backend/diary.db
+__pycache__/
