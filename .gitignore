@@ -1,5 +1,4 @@
 .env
-.trae
 backend/.venv
 backend/__pycache__
 backend/diary.db
