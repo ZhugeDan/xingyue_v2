@@ -1,5 +1,4 @@
 .env
-.cursor
 backend/.venv
 backend/__pycache__
 backend/diary.db
@@ -18,3 +17,4 @@ frontend/dist/
 # 服务器本地配置
 nginx.conf
 ecosystem.config.js
+*.txt
