@@ -1,8 +1,20 @@
 .env
-.claude
-.trae
 .cursor
 backend/.venv
 backend/__pycache__
 backend/diary.db
 __pycache__/
+
+# Python 废气
+__pycache__/
+*.py[cod]
+
+# 虚拟环境
+backend/venv/
+
+# 前端构建产物
+frontend/dist/
+
+# 服务器本地配置
+nginx.conf
+ecosystem.config.js
