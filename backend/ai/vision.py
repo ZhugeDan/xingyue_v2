@@ -17,8 +17,7 @@ import logging
 import os
 import re
 from typing import AsyncGenerator
-  
-  
+
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -30,24 +29,43 @@ _DEFAULT_MODEL    = "qwen-vl-7b"
 _TIMEOUT_SEC      = 60 
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
-# 单图批量分析（后台任务用）
-_PROMPT = """\
-你是一位家庭相册 AI 助手，擅长用温暖细腻的中文描述家人间的珍贵瞬间。
 
-请分析这张照片，严格按以下 JSON 格式回复（不要包含任何其他内容）：
-{
-  "description": "一段 20-60 字的温馨情感文案，描述画面场景与情绪氛围",
-  "tags": ["3-5 个简短标签，如：笑脸、户外、合照、生日、亲子时光"]
-}"""
+# [人物结构约束] 用于所有 Prompt，彻底解决人物幻觉
+_FAMILY_CONTEXT = """\
+[重要参考信息]：相册中常出现的年长女性是“姥姥”，常出现的年长男性是“姥爷”；年长男性极少出现“爷爷”，没有“奶奶”。
+识别老年人请以此关系为优先。若有年轻宝宝，请根据其与长辈的互动进行精准推断人物（如爸爸、妈妈、舅舅、姨妈等）。严格遵守此结构，不要编造不在此结构内的人物（如奶奶）。"""
+
+# 单图批量分析（后台任务用）
+_PROMPT = f"""\
+你是“星月日记数字档案馆”的 AI Vision 助手。你擅长用温暖、细腻感性的中文描述家人间的珍贵瞬间，能完美捕捉画面中的情感，并严格避免通用和机械化。
+
+{_FAMILY_CONTEXT}
+
+**严格指令**：
+1. 分析这张照片的人物与场景。
+2. 随机选择一种叙事风格（如：细腻幽默、感性诗意、日常写实、捕捉动作）生成文案。文案中不要直接出现“一家三口”这种通用的词，要更具体。
+3. 如果画面的光线是人造灯光（比如屏幕光），不要描述成“阳光透过窗户洒在他们身上”，要忠实于视觉事实。
+4. 严格按以下 JSON 格式回复（不要包含任何其他内容）：
+{{
+  "description": "一段 20-60 字的叙事性温馨情感文案",
+  "tags": ["3-5 个具体标签，包括人物关系（如：姥姥与宝宝）、场景描述（如：屏幕灯光、抓拍动作）"]
+}}"""
 
 # 多图流式分析（用户主动触发，打字机效果）
 _STREAM_PROMPT = """\
-你是一位家庭相册 AI 助手，擅长用温暖细腻的中文描述家人间的珍贵瞬间。
+你是“星月日记数字档案馆”的 AI Vision 助手。你擅长将多张家庭照片串联成一个有情感、有故事感的温馨日记。
 
-请综合分析以下 {n} 张照片，写一段 40-80 字的温馨日记文案，描述整体场景与情感氛围。
+{family_context}
+
+**严格指令**：
+1. 综合分析以下 {{n}} 张照片。
+2. 捕捉这一组照片的整体基调和故事情节（例如：一次聚餐、一次户外出游、一次人物对比成长、姥姥姥爷与宝宝的互动）。
+3. 随机选择一种叙事风格（细腻文学、写实记录、幽默生动），写一段 40-80 字的温馨日记文案。
+4. 严格拒绝通用、幻觉（不要编造画面没有的东西）。
+
 写完文案后，另起一行，严格输出以下分隔符（单独占一行）：
 ---TAGS---
-再另起一行，以 JSON 数组输出 3-5 个简短标签，例如：["笑脸", "合照", "户外"]
+再另起一行，以 JSON 数组输出 3-5 个具体、精准的关系与场景标签，例如：["姥姥姥爷聚首", "宝宝抓拍", "温馨聚餐", "互动时间"]
 除此之外不要输出任何内容。"""
 
 
@@ -56,7 +74,7 @@ _STREAM_PROMPT = """\
 def _parse_json(text: str) -> dict:
     """从模型输出中提取 JSON，兼容 markdown 代码块包裹的情况。"""
     text = text.strip()
-    # 使用 `{3} 正则匹配三个反引号，完美绕过前端 Markdown 解析器截断 Bug
+    # 完美绕过前端 Markdown 解析器截断 Bug
     m = re.search(r"`{3}(?:json)?\s*(\{[\s\S]*?\})\s*`{3}", text)
     if m:
         return json.loads(m.group(1))
@@ -91,12 +109,8 @@ async def analyze_image(image_url: str) -> dict:
                 ],
             }
         ],
-        # [微调4] ⚠️ Infra 防坑提示：
-        # 老版本 vLLM 对 "response_format": {"type": "json_object"} 支持不稳定。
-        # 这里暂时将其注释掉，靠 prompt 约束和正则兜底，保证 100% 不崩溃。
         # "response_format": {"type": "json_object"}, 
-        "temperature": 0.7,
-        # [微调3] 放宽单图生成的 Token 限制
+        "temperature": 0.8, # [优化] 提高变数，增加输出的多样性
         "max_tokens": 512, 
     }
 
@@ -160,22 +174,21 @@ async def stream_analysis(photo_urls: list[str]) -> AsyncGenerator[str, None]:
         {"type": "image_url", "image_url": {"url": url}}
         for url in photo_urls
     ]
+    # [优化] 将家庭上下文和流式 Prompt 拼接
     content.append({
         "type": "text",
-        "text": _STREAM_PROMPT.format(n=len(photo_urls)),
+        "text": _STREAM_PROMPT.format(n=len(photo_urls), family_context=_FAMILY_CONTEXT),
     })
 
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": content}],
         "stream": True,
-        "temperature": 0.8,
-        # [微调3] 多图总结字数更多，稍微放宽 token 限制
+        "temperature": 0.8, # [优化] 提高变数，增加输出的多样性
         "max_tokens": 1024, 
     }
 
     async with httpx.AsyncClient(
-        # [微调2] 流式请求的读超时放宽至 120s，给 GPU 充足的计算和显存调度时间
         timeout=httpx.Timeout(120.0, connect=10.0)  
     ) as client:
         async with client.stream(
