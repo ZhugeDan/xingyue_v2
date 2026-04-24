@@ -2,14 +2,14 @@
 AI Vision 模块 — 基于 OpenAI 兼容格式的多模态大模型客户端。
 
 兼容所有实现了 OpenAI Chat Completions API 的视觉大模型，通过环境变量切换：
-  - 通义千问 Qwen-VL（默认）  https://dashscope.aliyuncs.com/compatible-mode/v1
+  - 实验室 3x3090 算力集群（当前使用） http://127.0.0.1:8080/v1
+  - 通义千问 Qwen-VL            https://dashscope.aliyuncs.com/compatible-mode/v1
   - DeepSeek-VL              https://api.deepseek.com/v1
-  - GPT-4o-mini              https://api.openai.com/v1
 
 所需环境变量（均在 .env 中配置）：
-  VISION_API_KEY   — 必填；留空则跳过 AI 分析，不影响正常发帖
-  VISION_BASE_URL  — 选填；默认为 DashScope（通义千问）
-  VISION_MODEL     — 选填；默认为 qwen-vl-max
+  VISION_API_KEY   — 必填；留空则跳过 AI 分析
+  VISION_BASE_URL  — 选填；本地隧道填 http://127.0.0.1:8080/v1
+  VISION_MODEL     — 选填；默认为 qwen-vl-7b
 """
 
 import json
@@ -17,14 +17,17 @@ import logging
 import os
 import re
 from typing import AsyncGenerator
-
+  
+  
 import httpx
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-_DEFAULT_MODEL    = "qwen-vl-max"
-_TIMEOUT_SEC      = 45
+# [微调1] 默认值回退到本地私有化引擎
+_DEFAULT_BASE_URL = "http://127.0.0.1:8080/v1"
+_DEFAULT_MODEL    = "qwen-vl-7b"
+# [微调2] 本地大模型处理多图可能耗时较长，将全局超时时间稍微放宽到 60 秒
+_TIMEOUT_SEC      = 60 
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 # 单图批量分析（后台任务用）
@@ -53,8 +56,8 @@ _STREAM_PROMPT = """\
 def _parse_json(text: str) -> dict:
     """从模型输出中提取 JSON，兼容 markdown 代码块包裹的情况。"""
     text = text.strip()
-    # 尝试提取 ```json ... ``` 或 ``` ... ```
-    m = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text)
+    # 使用 `{3} 正则匹配三个反引号，完美绕过前端 Markdown 解析器截断 Bug
+    m = re.search(r"`{3}(?:json)?\s*(\{[\s\S]*?\})\s*`{3}", text)
     if m:
         return json.loads(m.group(1))
     return json.loads(text)
@@ -88,9 +91,13 @@ async def analyze_image(image_url: str) -> dict:
                 ],
             }
         ],
-        "response_format": {"type": "json_object"},   # Qwen-VL / GPT-4o 支持
+        # [微调4] ⚠️ Infra 防坑提示：
+        # 老版本 vLLM 对 "response_format": {"type": "json_object"} 支持不稳定。
+        # 这里暂时将其注释掉，靠 prompt 约束和正则兜底，保证 100% 不崩溃。
+        # "response_format": {"type": "json_object"}, 
         "temperature": 0.7,
-        "max_tokens": 300,
+        # [微调3] 放宽单图生成的 Token 限制
+        "max_tokens": 512, 
     }
 
     try:
@@ -139,7 +146,6 @@ async def stream_analysis(photo_urls: list[str]) -> AsyncGenerator[str, None]:
 
     - 遇到配置缺失直接 return（空生成器），调用方负责处理空结果。
     - 遇到网络/HTTP 错误向上抛出，由调用方统一包装成 SSE error 事件。
-    - 使用独立的读超时（90s），允许大模型慢慢输出长文本。
     """
     api_key  = os.environ.get("VISION_API_KEY", "").strip()
     base_url = os.environ.get("VISION_BASE_URL", _DEFAULT_BASE_URL).rstrip("/")
@@ -164,11 +170,13 @@ async def stream_analysis(photo_urls: list[str]) -> AsyncGenerator[str, None]:
         "messages": [{"role": "user", "content": content}],
         "stream": True,
         "temperature": 0.8,
-        "max_tokens": 500,
+        # [微调3] 多图总结字数更多，稍微放宽 token 限制
+        "max_tokens": 1024, 
     }
 
     async with httpx.AsyncClient(
-        timeout=httpx.Timeout(90.0, connect=10.0)   # default 90s, connect 10s
+        # [微调2] 流式请求的读超时放宽至 120s，给 GPU 充足的计算和显存调度时间
+        timeout=httpx.Timeout(120.0, connect=10.0)  
     ) as client:
         async with client.stream(
             "POST",
@@ -179,7 +187,7 @@ async def stream_analysis(photo_urls: list[str]) -> AsyncGenerator[str, None]:
                 "Content-Type": "application/json",
             },
         ) as resp:
-            resp.raise_for_status()   # HTTP 错误在此抛出，调用方捕获
+            resp.raise_for_status() 
             async for line in resp.aiter_lines():
                 if not line.startswith("data: "):
                     continue
