@@ -1,15 +1,5 @@
 """
 AI Vision 模块 — 基于 OpenAI 兼容格式的多模态大模型客户端。
-
-兼容所有实现了 OpenAI Chat Completions API 的视觉大模型，通过环境变量切换：
-  - 实验室 3x3090 算力集群（当前使用） http://127.0.0.1:8080/v1
-  - 通义千问 Qwen-VL            https://dashscope.aliyuncs.com/compatible-mode/v1
-  - DeepSeek-VL              https://api.deepseek.com/v1
-
-所需环境变量（均在 .env 中配置）：
-  VISION_API_KEY   — 必填；留空则跳过 AI 分析
-  VISION_BASE_URL  — 选填；本地隧道填 http://127.0.0.1:8080/v1
-  VISION_MODEL     — 选填；默认为 qwen-vl-7b
 """
 
 import json
@@ -22,80 +12,72 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# [微调1] 默认值回退到本地私有化引擎
 _DEFAULT_BASE_URL = "http://127.0.0.1:8080/v1"
 _DEFAULT_MODEL    = "qwen-vl-7b"
-# [微调2] 本地大模型处理多图可能耗时较长，将全局超时时间稍微放宽到 60 秒
 _TIMEOUT_SEC      = 60 
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
-# [人物结构约束] 用于所有 Prompt，彻底解决人物幻觉
+# [终极防幻觉人物约束]
 _FAMILY_CONTEXT = """\
-[重要参考信息]：相册中常出现的年长女性是“姥姥”，常出现的年长男性是“姥爷”；年长男性极少出现“爷爷”，没有“奶奶”。
-识别老年人请以此关系为优先。若有年轻宝宝，请根据其与长辈的互动进行精准推断人物（如爸爸、妈妈、舅舅、姨妈等）。严格遵守此结构，不要编造不在此结构内的人物（如奶奶）。"""
+【极其重要的防幻觉指令（务必严格遵守）】
+1. 绝对忠实画面：画面里有谁才写谁！如果照片里只有宝宝，绝不能凭空捏造“姥姥姥爷在旁边”。照片中没出现的人物、阳光、微风等绝对不要写。
+2. 身份映射：只有当你确切看到画面中有“年长女性”时，才称呼为“姥姥”；确切看到“年长男性”时，才称呼为“姥爷”（极少有爷爷，没有奶奶）。
+3. 拒绝瞎认亲：绝对不要把照片里的毛绒玩具、电视机里的人（如名人和政要）、路人强行认成家人！"""
 
 # 单图批量分析（后台任务用）
 _PROMPT = f"""\
-你是“星月日记数字档案馆”的 AI Vision 助手。你擅长用温暖、细腻感性的中文描述家人间的珍贵瞬间，能完美捕捉画面中的情感，并严格避免通用和机械化。
-
+你是“星月日记数字档案馆”的视觉分析专家。
 {_FAMILY_CONTEXT}
 
-**严格指令**：
-1. 分析这张照片的人物与场景。
-2. 随机选择一种叙事风格（如：细腻幽默、感性诗意、日常写实、捕捉动作）生成文案。文案中不要直接出现“一家三口”这种通用的词，要更具体。
-3. 如果画面的光线是人造灯光（比如屏幕光），不要描述成“阳光透过窗户洒在他们身上”，要忠实于视觉事实。
-4. 严格按以下 JSON 格式回复（不要包含任何其他内容）：
+请分析这张照片，严格按以下 JSON 格式返回，不要包含任何前缀或后缀问候语，不要加粗，不要输出多余符号：
 {{
-  "description": "一段 20-60 字的叙事性温馨情感文案",
-  "tags": ["3-5 个具体标签，包括人物关系（如：姥姥与宝宝）、场景描述（如：屏幕灯光、抓拍动作）"]
+  "description": "20-60字的客观温馨描述。再次强调，只描述画面中真实存在的实体。",
+  "tags": ["标签1", "标签2", "标签3"]
 }}"""
 
 # 多图流式分析（用户主动触发，打字机效果）
 _STREAM_PROMPT = """\
-你是“星月日记数字档案馆”的 AI Vision 助手。你擅长将多张家庭照片串联成一个有情感、有故事感的温馨日记。
+你是“星月日记数字档案馆”的视觉分析专家。
 
 {family_context}
 
-**严格指令**：
-1. 综合分析以下 {{n}} 张照片。
-2. 捕捉这一组照片的整体基调和故事情节（例如：一次聚餐、一次户外出游、一次人物对比成长、姥姥姥爷与宝宝的互动）。
-3. 随机选择一种叙事风格（细腻文学、写实记录、幽默生动），写一段 40-80 字的温馨日记文案。
-4. 严格拒绝通用、幻觉（不要编造画面没有的东西）。
-
-写完文案后，另起一行，严格输出以下分隔符（单独占一行）：
+请综合分析以下 {{n}} 张照片，写一段 40-80 字的日记文案。
+写完文案后，另起一行，严格输出以下分隔符（必须单独占一行，绝对不要加粗，不要加冒号）：
 ---TAGS---
-再另起一行，以 JSON 数组输出 3-5 个具体、精准的关系与场景标签，例如：["姥姥姥爷聚首", "宝宝抓拍", "温馨聚餐", "互动时间"]
-除此之外不要输出任何内容。"""
+再另起一行，以 JSON 数组输出 3-5 个客观的标签，例如：["宝宝抓拍", "玩具小熊"]
+不要输出任何其他内容。"""
 
 
-# ── JSON 提取 ─────────────────────────────────────────────────────────────────
+# ── JSON 提取 (强化版) ────────────────────────────────────────────────────────
 
 def _parse_json(text: str) -> dict:
-    """从模型输出中提取 JSON，兼容 markdown 代码块包裹的情况。"""
+    """极其强力的 JSON 提取器，无视大模型的废话和各种符号干扰"""
     text = text.strip()
-    # 完美绕过前端 Markdown 解析器截断 Bug
-    m = re.search(r"`{3}(?:json)?\s*(\{[\s\S]*?\})\s*`{3}", text)
+    # 直接用正则在全文中硬抠被 {} 包裹的字典内容
+    m = re.search(r"\{[\s\S]*\}", text)
     if m:
-        return json.loads(m.group(1))
-    return json.loads(text)
+        try:
+            return json.loads(m.group(0))
+        except Exception as e:
+            logger.warning(f"正则提取JSON后解析失败: {e}")
+            pass
+    
+    # 如果实在抠不出来，兜底返回，避免前端报错
+    return {
+        "description": text.replace("---TAGS---", ""), 
+        "tags": ["AI解析异常"]
+    }
 
 
 # ── 主函数 ────────────────────────────────────────────────────────────────────
 
 async def analyze_image(image_url: str) -> dict:
-    """
-    调用 Vision API 分析图片，返回 {"description": str | None, "tags": list[str]}。
-
-    - 若 VISION_API_KEY 未配置，静默返回 {} （不影响正常发帖流程）。
-    - 网络或解析错误时同样返回 {}，并记录 warning 日志。
-    """
     api_key  = os.environ.get("VISION_API_KEY", "").strip()
     base_url = os.environ.get("VISION_BASE_URL", _DEFAULT_BASE_URL).rstrip("/")
     model    = os.environ.get("VISION_MODEL", _DEFAULT_MODEL)
 
     if not api_key:
-        logger.debug("VISION_API_KEY not set — skipping AI analysis")
         return {}
 
     payload = {
@@ -109,8 +91,7 @@ async def analyze_image(image_url: str) -> dict:
                 ],
             }
         ],
-        # "response_format": {"type": "json_object"}, 
-        "temperature": 0.8, # [优化] 提高变数，增加输出的多样性
+        "temperature": 0.4, # [降温] 从0.8降到0.4，降低模型的发散性，强迫它更写实
         "max_tokens": 512, 
     }
 
@@ -130,24 +111,14 @@ async def analyze_image(image_url: str) -> dict:
         result = _parse_json(raw)
 
         return {
-            "description": str(result["description"]).strip() or None
-            if result.get("description") else None,
-            "tags": [
-                str(t).strip()
-                for t in result.get("tags", [])
-                if str(t).strip()
-            ],
+            "description": str(result.get("description", "")).strip() or None,
+            "tags": [str(t).strip() for t in result.get("tags", []) if str(t).strip()],
         }
 
     except httpx.HTTPStatusError as exc:
-        logger.warning(
-            "Vision API HTTP error %s for %s: %s",
-            exc.response.status_code, image_url, exc.response.text[:200],
-        )
-    except (json.JSONDecodeError, KeyError) as exc:
-        logger.warning("Vision API response parse error: %s", exc)
+        logger.warning(f"Vision API HTTP error {exc.response.status_code}")
     except Exception as exc:
-        logger.warning("Vision API unexpected error: %s", exc)
+        logger.warning(f"Vision API unexpected error: {exc}")
 
     return {}
 
@@ -155,26 +126,17 @@ async def analyze_image(image_url: str) -> dict:
 # ── 流式多图分析 ───────────────────────────────────────────────────────────────
 
 async def stream_analysis(photo_urls: list[str]) -> AsyncGenerator[str, None]:
-    """
-    流式调用 Vision API，逐 token yield 文本 delta。
-
-    - 遇到配置缺失直接 return（空生成器），调用方负责处理空结果。
-    - 遇到网络/HTTP 错误向上抛出，由调用方统一包装成 SSE error 事件。
-    """
     api_key  = os.environ.get("VISION_API_KEY", "").strip()
     base_url = os.environ.get("VISION_BASE_URL", _DEFAULT_BASE_URL).rstrip("/")
     model    = os.environ.get("VISION_MODEL", _DEFAULT_MODEL)
 
     if not api_key:
-        logger.debug("VISION_API_KEY not set — skipping stream analysis")
         return
 
-    # 多图 content 数组：先排列所有图片，最后附文字 prompt
     content: list[dict] = [
         {"type": "image_url", "image_url": {"url": url}}
         for url in photo_urls
     ]
-    # [优化] 将家庭上下文和流式 Prompt 拼接
     content.append({
         "type": "text",
         "text": _STREAM_PROMPT.format(n=len(photo_urls), family_context=_FAMILY_CONTEXT),
@@ -184,7 +146,7 @@ async def stream_analysis(photo_urls: list[str]) -> AsyncGenerator[str, None]:
         "model": model,
         "messages": [{"role": "user", "content": content}],
         "stream": True,
-        "temperature": 0.8, # [优化] 提高变数，增加输出的多样性
+        "temperature": 0.4, # 同样降温，防止多图瞎编乱造
         "max_tokens": 1024, 
     }
 
