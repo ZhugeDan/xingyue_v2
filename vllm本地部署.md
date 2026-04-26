@@ -214,3 +214,60 @@ pm2 logs
 npm run build
 ```
 
+调用学校容器的api简单测试。
+
+```
+from openai import OpenAI
+import base64
+
+# 就像调用 OpenAI 或千问一样，填入你的公网 IP 和设定的秘钥
+client = OpenAI(
+    base_url="http://wangxingyue.cn:8001/v1",  # 你的云服务器公网 IP + Nginx 端口
+    api_key="sk-xingyue-super-secret-2026"      # 你在 vLLM 启动时设定的秘钥
+)
+
+def encode_image_to_base64(image_path):
+    """将图片转换为 base64 编码"""
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode('utf-8')
+
+# 方式1: 纯文本问答
+response = client.chat.completions.create(
+    model="qwen-vl-7b",
+    messages=[
+        {"role": "user", "content": "你好，你能做什么？"}
+    ]
+)
+print("纯文本回答:", response.choices[0].message.content)
+print("-" * 50)
+
+# 方式2: 图片+文本问答（需要提供图片路径）
+image_path = "test.jpg"  # 替换为你的图片路径
+try:
+    # 将图片转换为 base64
+    base64_image = encode_image_to_base64(image_path)
+    
+    response = client.chat.completions.create(
+        model="qwen-vl-7b",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "这张图片里有什么？"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{base64_image}"
+                        }
+                    }
+                ]
+            }
+        ]
+    )
+    print("图片问答回答:", response.choices[0].message.content)
+except FileNotFoundError:
+    print(f"未找到图片文件: {image_path}")
+    print("请确保图片文件存在，或修改 image_path 变量指向正确的图片路径")
+except Exception as e:
+    print(f"发生错误: {e}")
+```
